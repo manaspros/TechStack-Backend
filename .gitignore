@@ -1,8 +1,10 @@
-# Dependency directories
+# Node modules
 node_modules/
 
+# Environment variables
+.env
+
 # Logs
-logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -12,13 +14,14 @@ yarn-error.log*
 pids
 *.pid
 *.seed
+*.pid.lock
 
-# Environment variables
-.env
+# Coverage directory
+coverage/
 
-# Build output
-dist/
-build/
+# Dependency directories
+.pnp/
+.pnp.js
 
 # Optional npm cache directory
 .npm
@@ -26,6 +29,6 @@ build/
 # Optional eslint cache
 .eslintcache
 
-# OS generated files
+# OS files
 .DS_Store
 Thumbs.db

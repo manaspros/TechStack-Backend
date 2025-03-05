@@ -1,13 +1,23 @@
 import express, { json } from "express";
 import axios from "axios";
 import cors from "cors";
+import dotenv from "dotenv";
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 app.use(json());
 app.use(cors());
 
-// Gemini API configuration
-const GEMINI_API_KEY = "AIzaSyAfhH8XdItzko-ZbCDkbsembd8wqZ2jbHE";
+// Get API key from environment variables
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+if (!GEMINI_API_KEY) {
+  console.error("⚠️ GEMINI_API_KEY is not set in the environment variables!");
+  console.error("Please create a .env file with your API key");
+  process.exit(1); // Exit if the API key is missing
+}
+
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
 
 // Enhanced system message with instruction to ask useful follow-up questions
@@ -112,40 +122,40 @@ app.post("/explain-step", async (req, res) => {
 
   try {
     // Format a prompt for the explanation
-    let prompt = '';
-    
-    switch(stepType) {
-      case 'prerequisite':
+    let prompt = "";
+
+    switch (stepType) {
+      case "prerequisite":
         prompt = `Explain this prerequisite step in a learning journey: "${stepTitle}". 
         Include why this foundational knowledge is important, how to acquire it, 
         and 2-3 specific resources (like documentation, tutorials or books) that would help.
         Keep the explanation under 150 words and format with bullet points for key concepts.`;
         break;
-      
-      case 'core':
+
+      case "core":
         prompt = `Explain this core concept in depth: "${stepTitle}". 
         Provide a clear explanation of what this involves, the key principles to understand, 
         common challenges learners face, and practical ways to master it.
         Include 1-2 example resources that provide the best explanations of this concept.
         Keep the explanation under 150 words and highlight important terms.`;
         break;
-      
-      case 'practice':
+
+      case "practice":
         prompt = `Explain this practice/project step: "${stepTitle}".
         Describe what skills this practice will develop, how to approach it step by step,
         common pitfalls to avoid, and how to know when you've mastered it.
         Suggest 1-2 specific project ideas that would help implement this knowledge.
         Keep the explanation under 150 words and be practical.`;
         break;
-      
-      case 'advanced':
+
+      case "advanced":
         prompt = `Explain this advanced concept: "${stepTitle}".
         Detail why this is considered advanced, what prerequisites are needed,
         how it builds on earlier knowledge, and the specific benefits of mastering it.
         Mention 1-2 real-world applications where this is essential.
         Keep the explanation under 150 words and highlight what makes this topic powerful.`;
         break;
-      
+
       default:
         prompt = `Explain this learning step in detail: "${stepTitle}".
         Include what it involves, why it's important, how to approach learning it,
@@ -155,10 +165,12 @@ app.post("/explain-step", async (req, res) => {
 
     // Call the Gemini API with the prompt
     const response = await axios.post(GEMINI_API_URL, {
-      contents: [{
-        role: "user",
-        parts: [{ text: prompt }]
-      }]
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
+      ],
     });
 
     // Extract the response
@@ -170,7 +182,8 @@ app.post("/explain-step", async (req, res) => {
 
     // Return the explanation
     return res.json({
-      explanation: generatedContent.parts?.[0]?.text || "No explanation available",
+      explanation:
+        generatedContent.parts?.[0]?.text || "No explanation available",
     });
   } catch (error) {
     console.error(
@@ -187,4 +200,5 @@ app.post("/explain-step", async (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server is listening on port ${PORT}`);
+  console.log(`API key status: ${GEMINI_API_KEY ? "✅ Loaded" : "❌ Missing"}`);
 });
