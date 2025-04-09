@@ -1,22 +1,36 @@
-import express, { json } from "express";
+import express from "express";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// Import middleware
+import errorHandler from './middleware/errorHandler.js';
+import notFound from './middleware/notFound.js';
+
+// Import routes
+import diagnosticsRoutes from './routes/diagnostics.js';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
-app.use(json());
-app.use(cors());
+app.use(express.json());
+
+// Configure CORS with expanded allowed headers
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-ID', 'X-User-Email']
+}));
 
 // Get API key from environment variables
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
   console.error("⚠️ GEMINI_API_KEY is not set in the environment variables!");
-  console.error("Please create a .env file with your API key");
-  process.exit(1); // Exit if the API key is missing
 }
 
 // MongoDB connection
@@ -157,9 +171,8 @@ When users ask about a technology:
 3. Focus on practical advice that helps users build skills progressively
 4. Include specific resources, documentation links, and hands-on project recommendations
 5. Break complex topics into manageable pieces for effective learning
-
-Occasionally (about 30% of the time), include 1-2 thoughtful follow-up questions at the end of your responses. 
-These questions should help the user think more deeply about what they're learning or prompt them to consider 
+Occasionally (about 30% of the time), include 1-2 thoughtful follow-up questions at the end of your responses.
+These questions should help the user think more deeply about what they're learning or prompt them to consider
 related concepts that would be useful for them to explore next. Format these as clear questions with question marks.`;
 
 // Helper functions
@@ -230,8 +243,11 @@ function buildChatContext(messages, newMessage) {
   return trimmedMessages;
 }
 
+// Mount diagnostics route directly
+app.use('/api/diagnostics', diagnosticsRoutes);
+
 // Main chat endpoint - Enhanced with context awareness
-app.post("/chat", async (req, res) => {
+app.post("/api/chat", async (req, res) => {
   const { newChat, oldChats, generateLearningPath, userId, chatId } = req.body;
 
   if (!newChat) {
@@ -344,7 +360,6 @@ app.post("/chat", async (req, res) => {
         if (generateLearningPath) {
           // Extract the learning steps
           const steps = extractLearningSteps(answer);
-
           if (steps.length > 0) {
             // Check if learning progress already exists for this chat
             let learningProgress = await LearningProgress.findOne({
@@ -465,7 +480,7 @@ function extractLearningSteps(text) {
 }
 
 // New endpoint to retrieve a user's learning progress
-app.get("/learning-progress/:userId", async (req, res) => {
+app.get("/api/learning-progress/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -485,7 +500,7 @@ app.get("/learning-progress/:userId", async (req, res) => {
 });
 
 // New endpoint to update learning progress (mark steps as completed)
-app.patch("/learning-progress/:progressId", async (req, res) => {
+app.patch("/api/learning-progress/:progressId", async (req, res) => {
   try {
     const { progressId } = req.params;
     const { stepId, completed, userId } = req.body;
@@ -550,7 +565,7 @@ app.patch("/learning-progress/:progressId", async (req, res) => {
 });
 
 // Existing explain-step endpoint
-app.post("/explain-step", async (req, res) => {
+app.post("/api/explain-step", async (req, res) => {
   const { stepId, stepTitle, stepType } = req.body;
 
   if (!stepTitle) {
@@ -635,7 +650,7 @@ app.post("/explain-step", async (req, res) => {
 });
 
 // New endpoint to fetch chat history for a user
-app.get("/chat-history/:userId", async (req, res) => {
+app.get("/api/chat-history/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { limit = 20, page = 1 } = req.query;
@@ -670,7 +685,7 @@ app.get("/chat-history/:userId", async (req, res) => {
 });
 
 // New endpoint to fetch a specific chat
-app.get("/chat/:chatId", async (req, res) => {
+app.get("/api/chat/:chatId", async (req, res) => {
   try {
     const { chatId } = req.params;
     const { userId } = req.query;
@@ -697,6 +712,10 @@ app.get("/chat/:chatId", async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch chat" });
   }
 });
+
+// Add 404 and error handlers at the end
+app.use(notFound);
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
