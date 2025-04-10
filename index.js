@@ -12,6 +12,7 @@ import notFound from './middleware/notFound.js';
 
 // Import routes
 import diagnosticsRoutes from './routes/diagnostics.js';
+import learningRoutes from './routes/learning.js';
 
 // Load environment variables
 dotenv.config();
@@ -24,7 +25,15 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-ID', 'X-User-Email']
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-User-ID', 
+    'X-User-Email', 
+    'X-Session-ID', 
+    'X-Path-Token', 
+    'X-Access-Token'
+  ]
 }));
 
 // Get API key from environment variables
@@ -95,71 +104,8 @@ const chatSchema = new mongoose.Schema({
   },
 });
 
-// Learning progress schema
-const learningStepSchema = new mongoose.Schema({
-  stepId: {
-    type: String,
-    required: true,
-  },
-  title: {
-    type: String,
-    required: true,
-  },
-  completed: {
-    type: Boolean,
-    default: false,
-  },
-  completedAt: Date,
-});
-
-const learningProgressSchema = new mongoose.Schema({
-  userId: {
-    type: String,
-    required: true,
-    index: true,
-  },
-  chatId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Chat",
-    required: true,
-  },
-  title: {
-    type: String,
-    required: true,
-  },
-  steps: [learningStepSchema],
-  totalSteps: {
-    type: Number,
-    required: true,
-  },
-  completedSteps: {
-    type: Number,
-    default: 0,
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
-  },
-  lastAccessedAt: {
-    type: Date,
-    default: Date.now,
-  },
-  isCompleted: {
-    type: Boolean,
-    default: false,
-  },
-});
-
 // Create models
 const Chat = mongoose.model("Chat", chatSchema);
-const LearningProgress = mongoose.model(
-  "LearningProgress",
-  learningProgressSchema
-);
 
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
 
@@ -243,8 +189,9 @@ function buildChatContext(messages, newMessage) {
   return trimmedMessages;
 }
 
-// Mount diagnostics route directly
+// Mount routes
 app.use('/api/diagnostics', diagnosticsRoutes);
+app.use('/api/learning', learningRoutes);
 
 // Main chat endpoint - Enhanced with context awareness
 app.post("/api/chat", async (req, res) => {
@@ -306,10 +253,19 @@ app.post("/api/chat", async (req, res) => {
       parts: [{ text: userQuery }],
     });
 
-    // Call the Gemini API with properly formatted request
-    const response = await axios.post(GEMINI_API_URL, {
+    // FIXED: Proper request format for Gemini API
+    const geminiRequest = {
       contents: contextMessages,
-    });
+      generationConfig: {
+        temperature: 0.7,
+        topK: 32,
+        topP: 0.95,
+        maxOutputTokens: 4096,
+      }
+    };
+
+    // Call the Gemini API with properly formatted request
+    const response = await axios.post(GEMINI_API_URL, geminiRequest);
 
     // Extract the response from the Gemini API
     const generatedContent = response.data.candidates?.[0]?.content;
@@ -358,50 +314,24 @@ app.post("/api/chat", async (req, res) => {
 
         // Create learning path record if this is a learning path
         if (generateLearningPath) {
+          // Import the LearningService to use its extractLearningSteps method and createLearningPath
+          const LearningService = (await import('./services/LearningService.js')).default;
+
           // Extract the learning steps
-          const steps = extractLearningSteps(answer);
+          const steps = LearningService.extractLearningSteps(answer);
+
           if (steps.length > 0) {
-            // Check if learning progress already exists for this chat
-            let learningProgress = await LearningProgress.findOne({
+            // Create learning path data
+            const pathData = {
               userId,
               chatId: savedChat._id,
-            });
+              title: `Learning Path: ${newChat.substring(0, 50)}`,
+              steps,
+              description: `Learning path for ${newChat}`,
+            };
 
-            if (learningProgress) {
-              // Update existing learning path
-              learningProgress.title = `Learning Path: ${newChat.substring(
-                0,
-                50
-              )}`;
-              learningProgress.steps = steps.map((step) => ({
-                stepId: step.id,
-                title: step.title,
-                completed: false,
-              }));
-              learningProgress.totalSteps = steps.length;
-              learningProgress.completedSteps = 0;
-              learningProgress.isCompleted = false;
-              learningProgress.updatedAt = new Date();
-              learningProgress.lastAccessedAt = new Date();
-              await learningProgress.save();
-            } else {
-              // Create new learning path progress
-              await LearningProgress.create({
-                userId,
-                chatId: savedChat._id,
-                title: `Learning Path: ${newChat.substring(0, 50)}`,
-                steps: steps.map((step) => ({
-                  stepId: step.id,
-                  title: step.title,
-                  completed: false,
-                })),
-                totalSteps: steps.length,
-                completedSteps: 0,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-                lastAccessedAt: new Date(),
-              });
-            }
+            // Create the learning path using the service
+            await LearningService.createLearningPath(pathData);
           }
         }
       } catch (dbError) {
@@ -426,141 +356,6 @@ app.post("/api/chat", async (req, res) => {
       error: "Internal server error.",
       details: error.response?.data || error.message,
     });
-  }
-});
-
-// Helper function to extract learning steps from text
-function extractLearningSteps(text) {
-  if (!text) return [];
-
-  const steps = [];
-  let stepCount = 0;
-
-  // Match patterns like "1. Step title" or "Step 1: title"
-  const stepPatterns = [
-    /(?:^|\n)(?:Step|Phase|Part|Level|Stage)[\s:-]+(\d+|[A-Z])[\s:-]*([^\n]+)/gi,
-    /(?:^|\n)(\d+)[\.:\)\-]\s+([^\n]+)/gi,
-    /(?:^|\n)#{1,3}\s+(?:(?:Step|Phase|Part|Stage|Level)[\s:-]+)?([^\n]+)/gi,
-  ];
-
-  for (const pattern of stepPatterns) {
-    const regex = new RegExp(pattern);
-    let match;
-
-    while ((match = regex.exec(text)) !== null) {
-      stepCount++;
-      const rawTitle = match[2] || match[1] || `Step ${stepCount}`;
-      const title = rawTitle.trim().replace(/^\*+|\*+$/g, ""); // Remove asterisks
-
-      steps.push({
-        id: `step-${stepCount}`,
-        title: title.length > 60 ? title.substring(0, 60) + "..." : title,
-      });
-    }
-
-    // If we found steps with this pattern, stop trying others
-    if (steps.length > 0) break;
-  }
-
-  // If no structured steps found, try simpler pattern
-  if (steps.length === 0) {
-    const numberedItems = text.match(/(?:^|\n)\d+\.\s+([^\n]+)/g);
-    if (numberedItems && numberedItems.length >= 3) {
-      numberedItems.forEach((item, idx) => {
-        const title = item.replace(/^\d+\.\s+/, "").trim();
-        steps.push({
-          id: `item-${idx + 1}`,
-          title: title.length > 60 ? title.substring(0, 60) + "..." : title,
-        });
-      });
-    }
-  }
-
-  return steps;
-}
-
-// New endpoint to retrieve a user's learning progress
-app.get("/api/learning-progress/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    if (!userId) {
-      return res.status(400).json({ error: "userId parameter is required." });
-    }
-
-    const learningPaths = await LearningProgress.find({ userId })
-      .sort({ updatedAt: -1 })
-      .limit(20);
-
-    return res.json({ learningPaths });
-  } catch (error) {
-    console.error("Error fetching learning progress:", error);
-    return res.status(500).json({ error: "Failed to fetch learning progress" });
-  }
-});
-
-// New endpoint to update learning progress (mark steps as completed)
-app.patch("/api/learning-progress/:progressId", async (req, res) => {
-  try {
-    const { progressId } = req.params;
-    const { stepId, completed, userId } = req.body;
-
-    if (!progressId || !stepId || typeof completed !== "boolean" || !userId) {
-      return res.status(400).json({ error: "Missing required fields." });
-    }
-
-    const learningPath = await LearningProgress.findOne({
-      _id: progressId,
-      userId,
-    });
-
-    if (!learningPath) {
-      return res.status(404).json({ error: "Learning path not found" });
-    }
-
-    // Find the step to update
-    const stepIndex = learningPath.steps.findIndex((s) => s.stepId === stepId);
-
-    if (stepIndex === -1) {
-      return res.status(404).json({ error: "Step not found in learning path" });
-    }
-
-    // Update completion status
-    const step = learningPath.steps[stepIndex];
-    const wasCompleted = step.completed;
-    step.completed = completed;
-
-    // Update completion timestamp if newly completed
-    if (completed && !wasCompleted) {
-      step.completedAt = new Date();
-      learningPath.completedSteps += 1;
-    } else if (!completed && wasCompleted) {
-      step.completedAt = undefined;
-      learningPath.completedSteps = Math.max(
-        0,
-        learningPath.completedSteps - 1
-      );
-    }
-
-    // Check if all steps are completed
-    learningPath.isCompleted =
-      learningPath.completedSteps === learningPath.totalSteps;
-
-    // Update timestamps
-    learningPath.updatedAt = new Date();
-    learningPath.lastAccessedAt = new Date();
-
-    await learningPath.save();
-
-    return res.json({
-      success: true,
-      learningPath,
-    });
-  } catch (error) {
-    console.error("Error updating learning progress:", error);
-    return res
-      .status(500)
-      .json({ error: "Failed to update learning progress" });
   }
 });
 
@@ -615,15 +410,24 @@ app.post("/api/explain-step", async (req, res) => {
         Keep the explanation under 150 words and be specific and practical.`;
     }
 
-    // Call the Gemini API with the prompt
-    const response = await axios.post(GEMINI_API_URL, {
+    // FIXED: Proper request format for Gemini API
+    const geminiRequest = {
       contents: [
         {
           role: "user",
           parts: [{ text: prompt }],
         },
       ],
-    });
+      generationConfig: {
+        temperature: 0.7,
+        topK: 32,
+        topP: 0.95,
+        maxOutputTokens: 1024,
+      }
+    };
+
+    // Call the Gemini API with the correct request format
+    const response = await axios.post(GEMINI_API_URL, geminiRequest);
 
     // Extract the response
     const generatedContent = response.data.candidates?.[0]?.content;
