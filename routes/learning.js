@@ -18,4 +18,7 @@ router.patch('/:progressId/step', LearningController.updateStepCompletion);
 // Add notes to a learning step
 router.patch('/:progressId/notes', LearningController.addStepNotes);
 
+// Delete a learning path
+router.delete('/:progressId', LearningController.deleteLearningPath);
+
 export default router;

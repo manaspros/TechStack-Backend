@@ -163,6 +163,40 @@ class LearningController {
       return res.status(500).json({ error: "Failed to add step notes" });
     }
   }
+
+  /**
+   * Delete a learning path
+   */
+  async deleteLearningPath(req, res) {
+    try {
+      const { progressId } = req.params;
+      const userId = req.body.userId || req.query.userId;
+      
+      if (!progressId) {
+        return res.status(400).json({ error: "progressId is required." });
+      }
+      
+      const result = await LearningService.deleteLearningPath(progressId, userId);
+      
+      return res.json({
+        success: true,
+        message: "Learning path deleted successfully",
+        deletedId: progressId
+      });
+    } catch (error) {
+      console.error("Error deleting learning path:", error);
+      
+      if (error.message === 'Learning path not found') {
+        return res.status(404).json({ error: error.message });
+      }
+      
+      if (error.message === 'Unauthorized') {
+        return res.status(403).json({ error: "You don't have permission to delete this learning path" });
+      }
+      
+      return res.status(500).json({ error: "Failed to delete learning path" });
+    }
+  }
 }
 
 export default new LearningController();

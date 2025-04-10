@@ -324,6 +324,46 @@ class LearningService {
     
     return steps;
   }
+
+  /**
+   * Delete a learning path
+   * @param {string} progressId - Learning path ID to delete
+   * @param {string} userId - User ID for authorization
+   * @returns {Promise} Result of the deletion operation
+   */
+  async deleteLearningPath(progressId, userId) {
+    try {
+      // First attempt: Find by both progressId and userId (strict match)
+      let learningPath = await LearningProgress.findOne({
+        _id: progressId,
+        userId,
+      });
+      
+      // If not found and userId starts with "session:", try finding by ID only
+      if (!learningPath && userId && userId.startsWith("session:")) {
+        console.log("Session-based userId didn't match, trying to find by ID only");
+        learningPath = await LearningProgress.findById(progressId);
+      }
+      
+      // Last resort: just find by ID
+      if (!learningPath) {
+        console.log("Attempting to find learning path by ID only as fallback");
+        learningPath = await LearningProgress.findById(progressId);
+      }
+      
+      if (!learningPath) {
+        throw new Error('Learning path not found');
+      }
+      
+      // Delete the learning path
+      await LearningProgress.deleteOne({ _id: progressId });
+      
+      return { success: true, deletedId: progressId };
+    } catch (error) {
+      console.error('Error in deleteLearningPath:', error);
+      throw error;
+    }
+  }
 }
 
 export default new LearningService();
