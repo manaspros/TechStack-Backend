@@ -1,9 +1,19 @@
+import BaseService from './BaseService.js';
 import LearningProgress from '../models/ProgressModel.js';
 
 /**
  * LearningService - Class for handling learning path operations
+ * Extends BaseService to inherit common functionality
  */
-class LearningService {
+class LearningService extends BaseService {
+  /**
+   * Constructor for the learning service
+   */
+  constructor() {
+    // Pass the LearningProgress model to the base service
+    super(LearningProgress);
+  }
+
   /**
    * Get learning paths for a specific user
    * @param {string} userId - The user ID
@@ -13,23 +23,13 @@ class LearningService {
    */
   async getUserLearningPaths(userId, limit = 20, page = 1) {
     try {
-      const skip = (parseInt(page) - 1) * parseInt(limit);
+      // Reuse the base class's getAll method with a user filter
+      const result = await this.getAll({ userId }, limit, page);
       
-      const learningPaths = await LearningProgress.find({ userId })
-        .sort({ updatedAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
-        
-      const total = await LearningProgress.countDocuments({ userId });
-      
+      // Return with learning paths property for backward compatibility
       return {
-        learningPaths,
-        pagination: {
-          total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit)),
-        }
+        learningPaths: result.items,
+        pagination: result.pagination
       };
     } catch (error) {
       console.error('Error in getUserLearningPaths:', error);
@@ -38,38 +38,47 @@ class LearningService {
   }
 
   /**
-   * Get a specific learning path by ID
+   * Get a specific learning path by ID with support for multiple ID lookup methods
    * @param {string} progressId - The learning path ID
    * @param {string} userId - The user ID (for authorization)
    * @returns {Promise} The learning path
    */
   async getLearningPathById(progressId, userId) {
     try {
-      // First attempt: Find by both progressId and userId (strict match)
-      let learningPath = await LearningProgress.findOne({
-        _id: progressId,
-        userId,
-      });
-      
-      // If not found and userId starts with "session:", try finding by ID only
-      // This handles the case where session IDs might change
-      if (!learningPath && userId && userId.startsWith("session:")) {
-        console.log("Session-based userId didn't match, trying to find by ID only");
-        learningPath = await LearningProgress.findById(progressId);
-      }
-      
-      // If still not found, try one last attempt with just the ID
-      if (!learningPath) {
-        console.log("Attempting to find learning path by ID only as fallback");
-        learningPath = await LearningProgress.findById(progressId);
+      // Strategy pattern for looking up learning paths
+      const lookupStrategies = [
+        // Strategy 1: Look up by both progressId and userId (strict match)
+        async () => await this.model.findOne({ _id: progressId, userId }),
         
-        // If found this way, let's update the userId to match the current user
-        // for easier access in the future
-        if (learningPath && userId) {
-          console.log("Updating learning path userId for future access");
-          learningPath.userId = userId;
-          await learningPath.save();
+        // Strategy 2: If userId starts with "session:", try finding by ID only
+        async () => {
+          if (userId && userId.startsWith("session:")) {
+            console.log("Session-based userId didn't match, trying to find by ID only");
+            return await this.model.findById(progressId);
+          }
+          return null;
+        },
+        
+        // Strategy 3: Last resort - just find by ID
+        async () => {
+          console.log("Attempting to find learning path by ID only as fallback");
+          const path = await this.model.findById(progressId);
+          
+          // Update the userId if found, for easier future access
+          if (path && userId) {
+            console.log("Updating learning path userId for future access");
+            path.userId = userId;
+            await path.save();
+          }
+          return path;
         }
+      ];
+      
+      // Try each strategy in sequence until one succeeds
+      let learningPath = null;
+      for (const strategy of lookupStrategies) {
+        learningPath = await strategy();
+        if (learningPath) break;
       }
       
       if (!learningPath) {
@@ -84,44 +93,67 @@ class LearningService {
   }
 
   /**
-   * Create a new learning path
+   * Create a new learning path with validation
    * @param {object} pathData - Learning path data
    * @returns {Promise} The created learning path
    */
   async createLearningPath(pathData) {
     try {
-      const { userId, chatId, title, steps } = pathData;
+      // Validate required fields
+      this.validateLearningPathData(pathData);
       
-      if (!userId || !chatId || !title || !steps || !Array.isArray(steps)) {
-        throw new Error('Missing required fields for learning path');
-      }
+      // Format the data for the model
+      const formattedData = this.formatLearningPathData(pathData);
       
-      const learningPath = new LearningProgress({
-        userId,
-        chatId,
-        title,
-        steps: steps.map(step => ({
-          stepId: step.id,
-          title: step.title,
-          completed: false,
-          category: step.category || 'core'
-        })),
-        totalSteps: steps.length,
-        completedSteps: 0,
-        description: pathData.description || '',
-        difficulty: pathData.difficulty || 'intermediate',
-        estimatedTimeToComplete: pathData.estimatedTimeToComplete || '',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        lastAccessedAt: new Date(),
-      });
-      
-      await learningPath.save();
-      return learningPath;
+      // Use the base class create method
+      return await this.create(formattedData);
     } catch (error) {
       console.error('Error in createLearningPath:', error);
       throw error;
     }
+  }
+  
+  /**
+   * Validate learning path data
+   * @private
+   * @param {object} pathData - Learning path data to validate
+   */
+  validateLearningPathData(pathData) {
+    const { userId, chatId, title, steps } = pathData;
+    
+    if (!userId || !chatId || !title || !steps || !Array.isArray(steps)) {
+      throw new Error('Missing required fields for learning path');
+    }
+  }
+  
+  /**
+   * Format learning path data for storage
+   * @private
+   * @param {object} pathData - Raw learning path data
+   * @returns {object} Formatted data ready for storage
+   */
+  formatLearningPathData(pathData) {
+    const { userId, chatId, title, steps } = pathData;
+    
+    return {
+      userId,
+      chatId,
+      title,
+      steps: steps.map(step => ({
+        stepId: step.id,
+        title: step.title,
+        completed: false,
+        category: step.category || 'core'
+      })),
+      totalSteps: steps.length,
+      completedSteps: 0,
+      description: pathData.description || '',
+      difficulty: pathData.difficulty || 'intermediate',
+      estimatedTimeToComplete: pathData.estimatedTimeToComplete || '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastAccessedAt: new Date(),
+    };
   }
 
   /**
@@ -134,33 +166,8 @@ class LearningService {
    */
   async updateStepCompletion(progressId, stepId, completed, userId) {
     try {
-      // First attempt: Find by both progressId and userId (strict match)
-      let learningPath = await LearningProgress.findOne({
-        _id: progressId,
-        userId,
-      });
-      
-      // If not found and userId starts with "session:", try finding by ID only
-      if (!learningPath && userId && userId.startsWith("session:")) {
-        console.log("Session-based userId didn't match, trying to find by ID only");
-        learningPath = await LearningProgress.findById(progressId);
-      }
-      
-      // Last resort: just find by ID
-      if (!learningPath) {
-        console.log("Attempting to find learning path by ID only as fallback");
-        learningPath = await LearningProgress.findById(progressId);
-        
-        // Update the userId if we found it, for easier future access
-        if (learningPath && userId) {
-          console.log("Updating learning path userId for future access");
-          learningPath.userId = userId;
-        }
-      }
-      
-      if (!learningPath) {
-        throw new Error('Learning path not found');
-      }
+      // Get the learning path using our flexible lookup method
+      const learningPath = await this.getLearningPathById(progressId, userId);
       
       // Find the step to update
       const stepIndex = learningPath.steps.findIndex(s => s.stepId === stepId);
@@ -169,22 +176,8 @@ class LearningService {
         throw new Error('Step not found in learning path');
       }
       
-      // Update completion status
-      const step = learningPath.steps[stepIndex];
-      const wasCompleted = step.completed;
-      step.completed = completed;
-      
-      // Update completion timestamp if newly completed
-      if (completed && !wasCompleted) {
-        step.completedAt = new Date();
-        learningPath.completedSteps += 1;
-      } else if (!completed && wasCompleted) {
-        step.completedAt = undefined;
-        learningPath.completedSteps = Math.max(0, learningPath.completedSteps - 1);
-      }
-      
-      // Check if all steps are completed
-      learningPath.isCompleted = learningPath.completedSteps === learningPath.totalSteps;
+      // Update step completion using our completion manager
+      this.manageStepCompletion(learningPath, stepIndex, completed);
       
       // Update timestamps
       learningPath.updatedAt = new Date();
@@ -199,6 +192,32 @@ class LearningService {
   }
   
   /**
+   * Manage step completion status and related properties
+   * @private
+   * @param {Object} learningPath - The learning path to update
+   * @param {Number} stepIndex - Index of the step to update
+   * @param {Boolean} completed - New completion status
+   */
+  manageStepCompletion(learningPath, stepIndex, completed) {
+    // Update completion status
+    const step = learningPath.steps[stepIndex];
+    const wasCompleted = step.completed;
+    step.completed = completed;
+    
+    // Update completion timestamp if newly completed
+    if (completed && !wasCompleted) {
+      step.completedAt = new Date();
+      learningPath.completedSteps += 1;
+    } else if (!completed && wasCompleted) {
+      step.completedAt = undefined;
+      learningPath.completedSteps = Math.max(0, learningPath.completedSteps - 1);
+    }
+    
+    // Check if all steps are completed
+    learningPath.isCompleted = learningPath.completedSteps === learningPath.totalSteps;
+  }
+
+  /**
    * Add notes to a learning step
    * @param {string} progressId - Learning path ID
    * @param {string} stepId - Step ID to update
@@ -208,33 +227,8 @@ class LearningService {
    */
   async addStepNotes(progressId, stepId, notes, userId) {
     try {
-      // First attempt: Find by both progressId and userId (strict match)
-      let learningPath = await LearningProgress.findOne({
-        _id: progressId,
-        userId,
-      });
-      
-      // If not found and userId starts with "session:", try finding by ID only
-      if (!learningPath && userId && userId.startsWith("session:")) {
-        console.log("Session-based userId didn't match, trying to find by ID only");
-        learningPath = await LearningProgress.findById(progressId);
-      }
-      
-      // Last resort: just find by ID
-      if (!learningPath) {
-        console.log("Attempting to find learning path by ID only as fallback");
-        learningPath = await LearningProgress.findById(progressId);
-        
-        // Update the userId if we found it, for easier future access
-        if (learningPath && userId) {
-          console.log("Updating learning path userId for future access");
-          learningPath.userId = userId;
-        }
-      }
-      
-      if (!learningPath) {
-        throw new Error('Learning path not found');
-      }
+      // Get the learning path using our flexible lookup method
+      const learningPath = await this.getLearningPathById(progressId, userId);
       
       // Find the step to update
       const stepIndex = learningPath.steps.findIndex(s => s.stepId === stepId);
@@ -286,15 +280,7 @@ class LearningService {
         const title = rawTitle.trim().replace(/^\*+|\*+$/g, ''); // Remove asterisks
         
         // Try to determine category based on content
-        let category = 'core';
-        const lowerTitle = title.toLowerCase();
-        if (lowerTitle.includes('prerequisite') || lowerTitle.includes('before') || lowerTitle.includes('foundation')) {
-          category = 'prerequisite';
-        } else if (lowerTitle.includes('practice') || lowerTitle.includes('project') || lowerTitle.includes('exercise')) {
-          category = 'practice';
-        } else if (lowerTitle.includes('advanced') || lowerTitle.includes('expert') || lowerTitle.includes('complex')) {
-          category = 'advanced';
-        }
+        const category = this.determineCategoryFromTitle(title);
         
         steps.push({
           id: `step-${stepCount}`,
@@ -309,20 +295,51 @@ class LearningService {
     
     // If no structured steps found, try simpler pattern
     if (steps.length === 0) {
-      const numberedItems = text.match(/(?:^|\n)\d+\.\s+([^\n]+)/g);
-      if (numberedItems && numberedItems.length >= 3) {
-        numberedItems.forEach((item, idx) => {
-          const title = item.replace(/^\d+\.\s+/, '').trim();
-          steps.push({
-            id: `item-${idx + 1}`,
-            title: title.length > 60 ? title.substring(0, 60) + '...' : title,
-            category: 'core'
-          });
-        });
-      }
+      this.extractSimpleSteps(text, steps);
     }
     
     return steps;
+  }
+  
+  /**
+   * Determine the category of a step from its title
+   * @private
+   * @param {String} title - Step title
+   * @returns {String} Category name
+   */
+  determineCategoryFromTitle(title) {
+    let category = 'core';
+    const lowerTitle = title.toLowerCase();
+    
+    if (lowerTitle.includes('prerequisite') || lowerTitle.includes('before') || lowerTitle.includes('foundation')) {
+      category = 'prerequisite';
+    } else if (lowerTitle.includes('practice') || lowerTitle.includes('project') || lowerTitle.includes('exercise')) {
+      category = 'practice';
+    } else if (lowerTitle.includes('advanced') || lowerTitle.includes('expert') || lowerTitle.includes('complex')) {
+      category = 'advanced';
+    }
+    
+    return category;
+  }
+  
+  /**
+   * Extract simple numbered steps from text
+   * @private
+   * @param {String} text - Text to analyze
+   * @param {Array} steps - Array to add steps to
+   */
+  extractSimpleSteps(text, steps) {
+    const numberedItems = text.match(/(?:^|\n)\d+\.\s+([^\n]+)/g);
+    if (numberedItems && numberedItems.length >= 3) {
+      numberedItems.forEach((item, idx) => {
+        const title = item.replace(/^\d+\.\s+/, '').trim();
+        steps.push({
+          id: `item-${idx + 1}`,
+          title: title.length > 60 ? title.substring(0, 60) + '...' : title,
+          category: 'core'
+        });
+      });
+    }
   }
 
   /**
@@ -333,32 +350,11 @@ class LearningService {
    */
   async deleteLearningPath(progressId, userId) {
     try {
-      // First attempt: Find by both progressId and userId (strict match)
-      let learningPath = await LearningProgress.findOne({
-        _id: progressId,
-        userId,
-      });
+      // Verify the learning path exists and user has access
+      await this.getLearningPathById(progressId, userId);
       
-      // If not found and userId starts with "session:", try finding by ID only
-      if (!learningPath && userId && userId.startsWith("session:")) {
-        console.log("Session-based userId didn't match, trying to find by ID only");
-        learningPath = await LearningProgress.findById(progressId);
-      }
-      
-      // Last resort: just find by ID
-      if (!learningPath) {
-        console.log("Attempting to find learning path by ID only as fallback");
-        learningPath = await LearningProgress.findById(progressId);
-      }
-      
-      if (!learningPath) {
-        throw new Error('Learning path not found');
-      }
-      
-      // Delete the learning path
-      await LearningProgress.deleteOne({ _id: progressId });
-      
-      return { success: true, deletedId: progressId };
+      // Use the base class delete method
+      return await this.delete(progressId);
     } catch (error) {
       console.error('Error in deleteLearningPath:', error);
       throw error;
@@ -366,4 +362,5 @@ class LearningService {
   }
 }
 
+// Export a singleton instance
 export default new LearningService();
